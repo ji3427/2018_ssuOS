@@ -1,0 +1,212 @@
+#include <syscall.h>
+#include <do_syscall.h>
+#include <proc/proc.h>
+#include <string.h>
+
+/*
+   시스템 콜 실행 과정
+   syscall(유저) -> interrupt(커널)
+   -> do_syscall(커널) -> syscall(유저 공간으로 리턴)
+*/
+
+#define syscall0(SYS_NUM) ({				\
+		int ret;							\
+		__asm__ __volatile(					\
+				"pushl %[num]\n\t"			\
+				"int $0x30\n\t"				\
+				"addl %%esp, 4"				\
+				:							\
+				: [num] "g" (SYS_NUM)		\
+				);							\
+		ret;								\
+		})
+
+#define syscall1(SYS_NUM, ARG0) ({				\
+		int ret;								\
+		__asm__ __volatile(						\
+				"pushl %[arg0] \n\t"			\
+				"pushl %[num] \n\t"				\
+				"int $0x30\n\t"					\
+				"addl %%esp, 8"					\
+				:								\
+				: [num] "g" (SYS_NUM),			\
+				[arg0] "g" (ARG0)				\
+				);								\
+		ret;									\
+		})
+
+#define syscall2(SYS_NUM, ARG0, ARG1) ({		\
+		int ret;								\
+		__asm__ __volatile(						\
+				"pushl %[arg1] \n\t"			\
+				"pushl %[arg0] \n\t"			\
+				"pushl %[num] \n\t"				\
+				"int $0x30\n\t"					\
+				"addl %%esp, 12"				\
+				:								\
+				: [num] "g" (SYS_NUM),			\
+				[arg0] "g" (ARG0),				\
+				[arg1] "g" (ARG1)				\
+				);								\
+		ret;									\
+		})
+
+#define syscall3(SYS_NUM, ARG0, ARG1, ARG2) ({	\
+		int ret;								\
+		__asm__ __volatile(						\
+				"pushl %[arg2] \n\t"			\
+				"pushl %[arg1] \n\t"			\
+				"pushl %[arg0] \n\t"			\
+				"pushl %[num] \n\t"				\
+				"int $0x30\n\t"					\
+				"addl %%esp, 16"				\
+				:								\
+				: [num] "g" (SYS_NUM),			\
+				[arg0] "g" (ARG0),				\
+				[arg1] "g" (ARG1),				\
+				[arg2] "g" (ARG2)				\
+				);								\
+		ret;									\
+		})
+
+int syscall_tbl[SYS_NUM][2];
+
+#define REGSYS(NUM, FUNC, ARG) \
+	syscall_tbl[NUM][0] = (int)FUNC; \
+syscall_tbl[NUM][1] = ARG; 
+
+void init_syscall(void)
+{
+	REGSYS(SYS_FORK, do_fork, 3);
+	REGSYS(SYS_EXIT, do_exit, 1);
+	REGSYS(SYS_WAIT, do_wait, 1);
+	REGSYS(SYS_SSUREAD, do_ssuread, 0);
+	REGSYS(SYS_SHUTDOWN, do_shutdown, 0);
+	REGSYS(SYS_OPEN, do_open, 2);
+	REGSYS(SYS_READ, do_read, 3);
+	REGSYS(SYS_WRITE, do_write, 3);
+	REGSYS(SYS_LSEEK, do_lseek,3);
+}
+
+void exit(int status)
+{
+	syscall1(SYS_EXIT, status);
+}
+
+pid_t fork(proc_func func, void* aux1, void* aux2)
+{
+	return syscall3(SYS_FORK, func, aux1, aux2);
+}
+
+pid_t wait(int *status)
+{
+	return syscall1(SYS_WAIT, status);
+}
+
+int ssuread()
+{
+	return syscall0(SYS_SSUREAD);
+}
+
+void shutdown(void)
+{
+	syscall0(SYS_SHUTDOWN);
+}
+
+int open(const char *pathname, int flags)
+{
+	return syscall2(SYS_OPEN, pathname, flags);
+}
+
+int read(int fd, char *buf, size_t len)
+{
+	return syscall3(SYS_READ, fd, buf, len);
+}
+
+int write(int fd, const char *buf, size_t len)
+{
+	return syscall3(SYS_WRITE, fd, buf, len);
+}
+int lseek(int fd,int offset,int whence,char * option){
+	flag = 0;
+	memset(_buf,0,BUFSIZ);
+	backup = cur_process->file[fd]->pos;
+	pos = cur_process->file[fd]->pos;
+	if(whence == SEEK_END){
+		pos = cur_process->file[fd]->inode->sn_size;
+		cur_process->file[fd]->pos = pos;
+	}
+	else if(whence == SEEK_SET){
+		cur_process->file[fd]->pos = 0;
+		pos = 0;
+	}
+	if(strcmp(option,"e") == 0){
+		if(offset + pos > (int)(cur_process->file[fd]->inode->sn_size) - 1){
+			whence = SEEK_END;
+			offset = pos + offset - cur_process->file[fd]->inode->sn_size;
+			cur_process->file[fd]->pos = cur_process->file[fd]->inode->sn_size;
+			for(num = 0 ; num <offset ; num++){
+				write(fd,"0",1);
+			}
+			offset = 0;
+		}
+	}
+	else if(strcmp(option,"a") == 0){
+		if(offset > 0){
+			num = cur_process->file[fd]->pos;
+			do{
+				memset(_buf,0,BUFSIZ);
+				length = read(fd,_buf,BUFSIZ);
+				if(flag == 0){
+					cur_process->file[fd]->pos = num;
+					cur_process->file[fd]->pos += offset;
+				}
+				write(fd,_buf,length);
+				flag = 1;
+			}while(length == BUFSIZ);			
+			cur_process->file[fd]->pos = num;
+			for(num = 0 ; num < offset; num++){
+				write(fd,"0",1);
+			}
+			whence = SEEK_CUR;
+		}
+	}
+	else if(strcmp(option,"re") == 0){
+		if(offset + pos < 0){
+			whence = SEEK_SET;
+			cur_process->file[fd]->pos = 0;
+			offset = (offset + pos) * -1;
+			printk("offset %d\n",offset);
+			do{
+				memset(_buf,0,BUFSIZ);
+				length = read(fd,_buf,BUFSIZ);
+				if(flag == 0){
+					for(num = 0 ; num < offset ; num++){
+						write(fd,"0",1);
+					}
+				}
+				write(fd,_buf,length);
+				flag =1;
+			}while(length == BUFSIZ);
+			cur_process->file[fd]->pos = 0;
+			offset = 0;
+		}
+		
+	}
+	else if(strcmp(option,"c")== 0){
+		offset = offset % ((int)(cur_process->file[fd]->inode->sn_size)+1);
+		if(offset + pos > (int)(cur_process->file[fd]->inode->sn_size)){
+			whence = SEEK_SET;
+			offset  = offset - (cur_process->file[fd]->inode->sn_size + 1 - pos);	
+		}
+		else if(offset + pos < 0){
+			whence = SEEK_END;
+			offset  = offset + pos + 1;
+		}
+	}
+	cur_process->file[fd]->pos = backup;
+	
+	return syscall3(SYS_LSEEK,fd,offset,whence);
+}
+
+
